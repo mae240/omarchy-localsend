@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "mae.localsend",
+  "name": "LocalSend",
+  "version": "1.0.0",
+  "author": "mae",
+  "license": "MIT",
+  "description": "Nearby LocalSend devices in the Omarchy bar: send files or the clipboard to one, keep favorites, and switch the receiver on and off.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "LocalSend",
+    "description": "Send files or the clipboard to nearby devices, keep favorites, toggle the receiver.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "scanIntervalSec": 20,
+      "favorites": []
+    },
+    "schema": [
+      {
+        "key": "scanIntervalSec",
+        "type": "integer",
+        "label": "Rescan interval while open (seconds)",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 20
+      }
+    ]
+  }
+}
