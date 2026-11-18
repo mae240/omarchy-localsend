@@ -148,14 +148,16 @@ function canStandInFor(live, favorite) {
 }
 
 // The list with device in place of the entry that has its key, or added
-// at the end.
+// at the end. A verified entry is never replaced by an unverified one.
 function upsertDevice(list, device) {
   var key = deviceKey(device)
   var next = []
   var replaced = false
   for (var i = 0; i < list.length; i++) {
-    if (deviceKey(list[i]) === key) { next.push(device); replaced = true }
-    else next.push(list[i])
+    if (deviceKey(list[i]) === key) {
+      next.push(list[i].verified === true && device.verified !== true ? list[i] : device)
+      replaced = true
+    } else next.push(list[i])
   }
   if (!replaced) next.push(device)
   return next

@@ -425,10 +425,15 @@ def accept_announced(discovery, device):
         report_device(discovery, device)
         return
     key = device_key(device)
+    # Keyed by address as well: someone claiming a fingerprint first must
+    # not keep the real device from being checked.
+    claim = (key, device["ip"], device["port"])
     with discovery.lock:
-        if key in discovery.checking or discovery.found.get(key, {}).get("verified"):
+        if claim in discovery.checking or discovery.found.get(key, {}).get("verified"):
             return
-        discovery.checking.add(key)
+        if len(discovery.checkers) >= MAX_CHECKS:
+            return
+        discovery.checking.add(claim)
         checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
         discovery.checkers.append(checker)
     checker.start()
@@ -506,6 +511,7 @@ def multicast_round(discovery, deadline):
 
 
 VERIFY_TIMEOUT = 1.5
+MAX_CHECKS = 64
 
 
 def verify_device(discovery, device):
@@ -610,8 +616,9 @@ def cmd_discover(args):
     # announced itself near the end is not lost.
     with discovery.lock:
         checkers = list(discovery.checkers)
+    wait_until = time.monotonic() + VERIFY_TIMEOUT + 1.0
     for checker in checkers:
-        checker.join(timeout=VERIFY_TIMEOUT + 1.0)
+        checker.join(timeout=max(0.0, wait_until - time.monotonic()))
     with discovery.lock:
         count = len(discovery.found)
     emit({"event": "done", "count": count})

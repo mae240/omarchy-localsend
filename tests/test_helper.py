@@ -157,6 +157,13 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertTrue(events[0]["verified"])
 
+    def test_an_impostor_claiming_first_does_not_block_the_real_device(self):
+        impostor = dict(self.announced(self.fingerprint), port=1)
+        discovery, events = self.run_announce(impostor, self.announced(self.fingerprint))
+        self.assertEqual(len(discovery.checkers), 2)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["port"], self.port)
+
     def test_an_announced_https_impostor_never_appears(self):
         FakeLocalSend.claimed_fingerprint = self.other_fingerprint
         discovery, events = self.run_announce(self.announced(self.other_fingerprint))

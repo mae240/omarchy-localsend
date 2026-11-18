@@ -153,4 +153,7 @@ test("upsertDevice replaces the entry with the same key", () => {
   list = Model.upsertDevice(list, phone)
   assert.equal(list.length, 2)
   assert.equal(list[0].verified, true)
+  list = Model.upsertDevice(list, { ...phone, ip: "192.168.0.66", protocol: "http", verified: false })
+  assert.equal(list[0].ip, "192.168.0.23", "an unverified claim does not replace a verified device")
+  assert.equal(list[0].protocol, "https")
 })
