@@ -164,6 +164,11 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["port"], self.port)
 
+    def test_one_host_cannot_use_up_the_checks(self):
+        flood = [dict(self.announced("%064x" % n), port=1) for n in range(20)]
+        discovery, _events = self.run_announce(*flood)
+        self.assertEqual(len(discovery.checkers), helper.MAX_CHECKS_PER_IP)
+
     def test_an_announced_https_impostor_never_appears(self):
         FakeLocalSend.claimed_fingerprint = self.other_fingerprint
         discovery, events = self.run_announce(self.announced(self.other_fingerprint))

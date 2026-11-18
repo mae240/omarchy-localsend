@@ -431,7 +431,9 @@ def accept_announced(discovery, device):
     with discovery.lock:
         if claim in discovery.checking or discovery.found.get(key, {}).get("verified"):
             return
-        if len(discovery.checkers) >= MAX_CHECKS:
+        # One host cannot use up the budget for everyone else.
+        from_ip = sum(1 for _k, ip, _p in discovery.checking if ip == device["ip"])
+        if from_ip >= MAX_CHECKS_PER_IP or len(discovery.checkers) >= MAX_CHECKS:
             return
         discovery.checking.add(claim)
         checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
@@ -511,7 +513,8 @@ def multicast_round(discovery, deadline):
 
 
 VERIFY_TIMEOUT = 1.5
-MAX_CHECKS = 64
+MAX_CHECKS = 256
+MAX_CHECKS_PER_IP = 4
 
 
 def verify_device(discovery, device):
