@@ -320,6 +320,8 @@ class Discovery:
         self.lock = threading.Lock()
         self.checking = set()
         self.checks_per_ip = {}
+        self.udp_checks = 0
+        self.closed = False
         self.checkers = []
 
     def is_own(self, ip):
@@ -389,7 +391,7 @@ class RegisterServer(threading.Thread):
                 except ValueError:
                     device = None
                 if device and not self.discovery.is_own(ip):
-                    accept_announced(self.discovery, device)
+                    accept_announced(self.discovery, device, via="tcp")
                 payload = json.dumps(self.discovery.info).encode("utf-8")
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(payload) + payload)
             else:
@@ -417,11 +419,13 @@ def report_device(discovery, device):
     emit(dict(device, event="device"))
 
 
-def accept_announced(discovery, device):
+def accept_announced(discovery, device, via="udp"):
     """A device that announced itself or registered with us. Its claims are
     unchecked: an http device is reported as it is, an https device only
     after its certificate matched the fingerprint it claims. Each key is
     checked once per run."""
+    if discovery.closed:
+        return
     if device["protocol"] != "https":
         report_device(discovery, device)
         return
@@ -430,16 +434,26 @@ def accept_announced(discovery, device):
     # not keep the real device from being checked.
     claim = (key, device["ip"], device["port"])
     with discovery.lock:
+        if discovery.closed:
+            return
         if claim in discovery.checking or discovery.found.get(key, {}).get("verified"):
             return
         # Every check counts against its address for the whole run, failed
         # ones too, so one host cannot use up the budget for everyone else.
-        # A forged source address gets around this; then devices may be
-        # missing from the list, but nothing is sent to the wrong one.
-        from_ip = discovery.checks_per_ip.get(device["ip"], 0)
-        if from_ip >= MAX_CHECKS_PER_IP or len(discovery.checkers) >= MAX_CHECKS:
+        # A UDP source address can be forged, a TCP one cannot, so the two
+        # have separate budgets: forged announcements cannot crowd out a
+        # device that registers with us over TCP, which is how LocalSend
+        # devices answer an announcement. Only UDP counts against the
+        # run-wide cap.
+        budget = (via, device["ip"])
+        used = discovery.checks_per_ip.get(budget, 0)
+        if used >= MAX_CHECKS_PER_IP:
             return
-        discovery.checks_per_ip[device["ip"]] = from_ip + 1
+        if via != "tcp" and discovery.udp_checks >= MAX_CHECKS:
+            return
+        discovery.checks_per_ip[budget] = used + 1
+        if via != "tcp":
+            discovery.udp_checks += 1
         discovery.checking.add(claim)
         checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
         # Started under the lock, so cmd_discover never joins a thread that
@@ -497,7 +511,7 @@ def multicast_round(discovery, deadline):
                 if isinstance(payload, dict) and not discovery.is_own(addr[0]):
                     device = sanitize_device(payload, addr[0])
                     if device:
-                        accept_announced(discovery, device)
+                        accept_announced(discovery, device, via="udp")
                         # Devices that announce want a register in return so they
                         # learn about us too; answering keeps us visible to them.
                         if payload.get("announce") is True:
@@ -629,7 +643,10 @@ def cmd_discover(args):
         server.stop.set()
     # Certificate checks started late still get to finish, so a device that
     # announced itself near the end is not lost.
+    # Closing under the lock that admits checks: a register handler still
+    # running cannot start a check that nobody waits for.
     with discovery.lock:
+        discovery.closed = True
         checkers = list(discovery.checkers)
     wait_until = time.monotonic() + VERIFY_TIMEOUT + 1.0
     for checker in checkers:

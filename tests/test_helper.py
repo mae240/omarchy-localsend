@@ -201,6 +201,24 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(len(discovery.checkers), helper.MAX_CHECKS_PER_IP)
         self.assertLess(len(discovery.checkers), helper.MAX_CHECKS)
 
+    def test_forged_udp_announcements_cannot_crowd_out_a_tcp_registration(self):
+        forged = [dict(self.announced("%064x" % n), port=1) for n in range(40)]
+        discovery, events = self.run_announce(*forged)
+        discovery.udp_checks = helper.MAX_CHECKS
+        with redirect_stdout(io.StringIO()) as out:
+            helper.accept_announced(discovery, self.announced(self.fingerprint), via="tcp")
+            for checker in discovery.checkers:
+                checker.join(5)
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_no_check_starts_after_the_run_closed(self):
+        discovery = self.discovery()
+        discovery.closed = True
+        with redirect_stdout(io.StringIO()) as out:
+            helper.accept_announced(discovery, self.announced(self.fingerprint), via="tcp")
+        self.assertEqual(discovery.checkers, [])
+        self.assertEqual(out.getvalue(), "")
+
     def test_an_announced_https_impostor_never_appears(self):
         FakeLocalSend.claimed_fingerprint = self.other_fingerprint
         discovery, events = self.run_announce(self.announced(self.other_fingerprint))
