@@ -157,11 +157,11 @@ Item {
     if (event.event === "device") {
       var device = Model.normalizeDevice(event)
       if (!device) return
-      // The cap holds new devices back, not updates of known ones.
-      if (_scanDevices.length >= 200 && !Model.containsKey(_scanDevices, Model.deviceKey(device))) return
       // A later event for the same device (now verified) replaces the
-      // earlier one in both lists.
-      _scanDevices = Model.upsertDevice(_scanDevices, device)
+      // earlier one; the cap holds back new devices only.
+      var next = Model.addCapped(_scanDevices, device, 200)
+      if (next === null) return
+      _scanDevices = next
       // Show it the moment it answers; the list settles when the scan ends.
       discovered = Model.upsertDevice(discovered, device)
     } else if (event.event === "done") {

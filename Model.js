@@ -152,6 +152,19 @@ function containsKey(list, key) {
   return false
 }
 
+// upsertDevice with a cap on the number of entries. When the list is full,
+// a verified newcomer takes the place of the first unverified entry, so a
+// flood of unchecked claims cannot crowd out a checked device. Returns null
+// when the device is not taken.
+function addCapped(list, device, cap) {
+  if (list.length < cap || containsKey(list, deviceKey(device))) return upsertDevice(list, device)
+  if (device.verified !== true) return null
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].verified !== true) return list.slice(0, i).concat(list.slice(i + 1), [device])
+  }
+  return null
+}
+
 // The list with device in place of the entry that has its key, or added
 // at the end. A verified entry is never replaced by an unverified one.
 function upsertDevice(list, device) {

@@ -10,7 +10,7 @@ const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
            sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
-           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey }
+           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey, addCapped }
 `)()
 
 const FP = "10282E962A1D0334718B6E54314C8DC91855077DE93477ED26845E0F6359548D"
@@ -161,4 +161,14 @@ test("upsertDevice replaces the entry with the same key", () => {
 test("containsKey finds a device by key", () => {
   assert.equal(Model.containsKey([phone], Model.deviceKey({ ...phone, ip: "10.0.0.1" })), true)
   assert.equal(Model.containsKey([phone], Model.deviceKey(laptop)), false)
+})
+
+test("a full list makes room for a verified device, not for an unverified one", () => {
+  const flood = []
+  for (let i = 0; i < 3; i++) flood.push({ ...laptop, alias: "x" + i, ip: "10.0.0." + (i + 1) })
+  assert.equal(Model.addCapped(flood, { ...laptop, ip: "10.0.0.9" }, 3), null)
+  const next = Model.addCapped(flood, phone, 3)
+  assert.equal(next.length, 3)
+  assert.equal(next[2].alias, "Pixel")
+  assert.equal(Model.addCapped([phone], { ...phone, ip: "10.0.0.5" }, 1)[0].ip, "10.0.0.5")
 })
