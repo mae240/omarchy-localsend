@@ -34,6 +34,7 @@ def make_certificate(directory, name):
 
 class FakeLocalSend(http.server.BaseHTTPRequestHandler):
     claimed_fingerprint = ""
+    extra = {}
     requests = []
 
     def log_message(self, *_args):
@@ -49,7 +50,7 @@ class FakeLocalSend(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         FakeLocalSend.requests.append(self.path)
-        self.reply(200, {"alias": "Fake", "fingerprint": FakeLocalSend.claimed_fingerprint, "deviceType": "desktop"})
+        self.reply(200, dict({"alias": "Fake", "fingerprint": FakeLocalSend.claimed_fingerprint, "deviceType": "desktop"}, **FakeLocalSend.extra))
 
     def do_POST(self):
         FakeLocalSend.requests.append(self.path)
@@ -126,6 +127,22 @@ class PinningTest(unittest.TestCase):
         discovery = helper.Discovery([])
         discovery.info = {"fingerprint": "own"}
         return discovery
+
+    def test_send_over_https_without_a_pin_is_refused(self):
+        code, events = self.send(None)
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["code"], "badTarget")
+        self.assertEqual(FakeLocalSend.requests, [])
+
+    def test_probe_records_the_checked_endpoint_not_the_claimed_one(self):
+        FakeLocalSend.extra = {"protocol": "http", "port": 9}
+        try:
+            device = helper.probe_info("127.0.0.1", self.port, "https", "own")
+        finally:
+            FakeLocalSend.extra = {}
+        self.assertTrue(device["verified"])
+        self.assertEqual(device["protocol"], "https")
+        self.assertEqual(device["port"], self.port)
 
     def test_a_verified_record_replaces_an_unverified_one(self):
         discovery = self.discovery()

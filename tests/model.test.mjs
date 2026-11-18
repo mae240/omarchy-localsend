@@ -10,7 +10,7 @@ const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
            sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
-           isValidFingerprint, fingerprintArgs, upsertDevice }
+           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey }
 `)()
 
 const FP = "10282E962A1D0334718B6E54314C8DC91855077DE93477ED26845E0F6359548D"
@@ -156,4 +156,9 @@ test("upsertDevice replaces the entry with the same key", () => {
   list = Model.upsertDevice(list, { ...phone, ip: "192.168.0.66", protocol: "http", verified: false })
   assert.equal(list[0].ip, "192.168.0.23", "an unverified claim does not replace a verified device")
   assert.equal(list[0].protocol, "https")
+})
+
+test("containsKey finds a device by key", () => {
+  assert.equal(Model.containsKey([phone], Model.deviceKey({ ...phone, ip: "10.0.0.1" })), true)
+  assert.equal(Model.containsKey([phone], Model.deviceKey(laptop)), false)
 })

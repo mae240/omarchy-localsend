@@ -147,6 +147,11 @@ function canStandInFor(live, favorite) {
   return live.protocol === "https" && live.verified === true
 }
 
+function containsKey(list, key) {
+  for (var i = 0; i < list.length; i++) if (deviceKey(list[i]) === key) return true
+  return false
+}
+
 // The list with device in place of the entry that has its key, or added
 // at the end. A verified entry is never replaced by an unverified one.
 function upsertDevice(list, device) {

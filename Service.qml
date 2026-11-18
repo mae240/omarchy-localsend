@@ -156,7 +156,9 @@ Item {
     if (!event) return
     if (event.event === "device") {
       var device = Model.normalizeDevice(event)
-      if (!device || _scanDevices.length >= 200) return
+      if (!device) return
+      // The cap holds new devices back, not updates of known ones.
+      if (_scanDevices.length >= 200 && !Model.containsKey(_scanDevices, Model.deviceKey(device))) return
       // A later event for the same device (now verified) replaces the
       // earlier one in both lists.
       _scanDevices = Model.upsertDevice(_scanDevices, device)

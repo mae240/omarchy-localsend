@@ -437,8 +437,10 @@ def accept_announced(discovery, device):
             return
         discovery.checking.add(claim)
         checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
+        # Started under the lock, so cmd_discover never joins a thread that
+        # has not started yet.
+        checker.start()
         discovery.checkers.append(checker)
-    checker.start()
 
 
 def multicast_round(discovery, deadline):
@@ -554,6 +556,11 @@ def probe_info(ip, port, protocol, fingerprint, timeout=0.7):
     finally:
         conn.close()
     device = sanitize_device(payload, ip, port, protocol)
+    if device:
+        # What was checked is this connection, so the record names it, not
+        # whatever port or protocol the answer claims.
+        device["port"] = port
+        device["protocol"] = protocol
     if device and protocol == "https":
         if not cert_fingerprint or normalize_fingerprint(device["fingerprint"]) != cert_fingerprint:
             return None
@@ -711,9 +718,12 @@ def cmd_send(args):
         emit({"event": "error", "code": "badTarget", "message": "invalid port or protocol"})
         return 2
     fingerprint = normalize_fingerprint(args.fingerprint)
-    if fingerprint and (args.protocol != "https" or not is_certificate_hash(fingerprint)):
-        # A pin that cannot be checked must not turn into no pin at all.
-        emit({"event": "error", "code": "badTarget", "message": "fingerprint is not a certificate hash"})
+    if args.protocol == "https" and not is_certificate_hash(fingerprint):
+        # Every https send is pinned; a missing or unusable pin stops it.
+        emit({"event": "error", "code": "badTarget", "message": "https needs a certificate hash as fingerprint"})
+        return 2
+    if args.protocol != "https" and fingerprint:
+        emit({"event": "error", "code": "badTarget", "message": "a fingerprint can only be checked over https"})
         return 2
     entries = []
     try:
