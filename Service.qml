@@ -161,9 +161,11 @@ Item {
       // earlier one; the cap holds back new devices only.
       var next = Model.addCapped(_scanDevices, device, 200)
       if (next === null) return
+      // An entry the newcomer pushed out leaves the visible list at once.
+      var shown = Model.withoutDropped(discovered, _scanDevices, next)
       _scanDevices = next
       // Show it the moment it answers; the list settles when the scan ends.
-      discovered = Model.upsertDevice(discovered, device)
+      discovered = Model.upsertDevice(shown, device)
     } else if (event.event === "done") {
       discovered = _scanDevices
     }

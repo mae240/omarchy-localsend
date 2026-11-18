@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import ssl
 import subprocess
 import tempfile
@@ -182,9 +183,26 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(events[0]["port"], self.port)
 
     def test_one_host_cannot_use_up_the_checks(self):
-        flood = [dict(self.announced("%064x" % n), port=1) for n in range(20)]
-        discovery, _events = self.run_announce(*flood)
+        # A port that accepts and never answers keeps every check in flight.
+        silent = socket.socket()
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(64)
+        try:
+            flood = [dict(self.announced("%064x" % n), port=silent.getsockname()[1]) for n in range(20)]
+            discovery, _events = self.run_announce(*flood)
+        finally:
+            silent.close()
         self.assertEqual(len(discovery.checkers), helper.MAX_CHECKS_PER_IP)
+
+    def test_failed_checks_free_the_address_for_the_real_device(self):
+        forged = [dict(self.announced("%064x" % n), port=1) for n in range(helper.MAX_CHECKS_PER_IP)]
+        discovery, events = self.run_announce(*forged)
+        self.assertEqual(events, [])
+        with redirect_stdout(io.StringIO()) as out:
+            helper.accept_announced(discovery, self.announced(self.fingerprint))
+            for checker in discovery.checkers:
+                checker.join(5)
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
 
     def test_an_announced_https_impostor_never_appears(self):
         FakeLocalSend.claimed_fingerprint = self.other_fingerprint

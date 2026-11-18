@@ -165,6 +165,20 @@ function addCapped(list, device, cap) {
   return null
 }
 
+// visible without the entries that were in before but not in after.
+function withoutDropped(visible, before, after) {
+  var dropped = {}
+  var count = 0
+  for (var i = 0; i < before.length; i++) {
+    var key = deviceKey(before[i])
+    if (!containsKey(after, key)) { dropped[key] = true; count++ }
+  }
+  if (count === 0) return visible
+  var out = []
+  for (var j = 0; j < visible.length; j++) if (!dropped[deviceKey(visible[j])]) out.push(visible[j])
+  return out
+}
+
 // The list with device in place of the entry that has its key, or added
 // at the end. A verified entry is never replaced by an unverified one.
 function upsertDevice(list, device) {

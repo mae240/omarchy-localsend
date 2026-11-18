@@ -436,7 +436,7 @@ def accept_announced(discovery, device):
         if from_ip >= MAX_CHECKS_PER_IP or len(discovery.checkers) >= MAX_CHECKS:
             return
         discovery.checking.add(claim)
-        checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
+        checker = threading.Thread(target=verify_device, args=(discovery, device, claim), daemon=True)
         # Started under the lock, so cmd_discover never joins a thread that
         # has not started yet.
         checker.start()
@@ -519,15 +519,22 @@ MAX_CHECKS = 256
 MAX_CHECKS_PER_IP = 4
 
 
-def verify_device(discovery, device):
+def verify_device(discovery, device, claim=None):
     """Ask an https device for its info so its certificate can be checked;
-    a match is reported as verified, anything else is not reported."""
+    a match is reported as verified, anything else is not reported. A
+    failed check frees its place in the per-address budget, so forged
+    announcements cannot keep the real device at that address unchecked;
+    the overall budget still counts it."""
+    checked = None
     try:
         checked = probe_info(device["ip"], device["port"], "https", discovery.info["fingerprint"], timeout=VERIFY_TIMEOUT)
     except (OSError, ValueError, http.client.HTTPException):
-        return
+        pass
     if checked and device_key(checked) == device_key(device):
         report_device(discovery, checked)
+    elif claim is not None:
+        with discovery.lock:
+            discovery.checking.discard(claim)
 
 
 def register_with(device, info):

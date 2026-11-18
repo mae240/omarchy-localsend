@@ -10,7 +10,7 @@ const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
            sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
-           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey, addCapped }
+           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey, addCapped, withoutDropped }
 `)()
 
 const FP = "10282E962A1D0334718B6E54314C8DC91855077DE93477ED26845E0F6359548D"
@@ -171,4 +171,12 @@ test("a full list makes room for a verified device, not for an unverified one", 
   assert.equal(next.length, 3)
   assert.equal(next[2].alias, "Pixel")
   assert.equal(Model.addCapped([phone], { ...phone, ip: "10.0.0.5" }, 1)[0].ip, "10.0.0.5")
+})
+
+test("withoutDropped removes entries a newcomer pushed out", () => {
+  const before = [laptop, { ...laptop, ip: "10.0.0.2" }]
+  const after = [{ ...laptop, ip: "10.0.0.2" }, phone]
+  const visible = Model.withoutDropped(before, before, after)
+  assert.deepEqual(visible.map(d => d.ip), ["10.0.0.2"])
+  assert.equal(Model.withoutDropped(before, before, before.concat([phone])), before)
 })
