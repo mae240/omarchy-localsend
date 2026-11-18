@@ -194,15 +194,12 @@ class PinningTest(unittest.TestCase):
             silent.close()
         self.assertEqual(len(discovery.checkers), helper.MAX_CHECKS_PER_IP)
 
-    def test_failed_checks_free_the_address_for_the_real_device(self):
-        forged = [dict(self.announced("%064x" % n), port=1) for n in range(helper.MAX_CHECKS_PER_IP)]
-        discovery, events = self.run_announce(*forged)
+    def test_failed_checks_count_against_their_address(self):
+        refused = [dict(self.announced("%064x" % n), port=1) for n in range(20)]
+        discovery, events = self.run_announce(*refused)
         self.assertEqual(events, [])
-        with redirect_stdout(io.StringIO()) as out:
-            helper.accept_announced(discovery, self.announced(self.fingerprint))
-            for checker in discovery.checkers:
-                checker.join(5)
-        self.assertEqual(len(out.getvalue().splitlines()), 1)
+        self.assertEqual(len(discovery.checkers), helper.MAX_CHECKS_PER_IP)
+        self.assertLess(len(discovery.checkers), helper.MAX_CHECKS)
 
     def test_an_announced_https_impostor_never_appears(self):
         FakeLocalSend.claimed_fingerprint = self.other_fingerprint

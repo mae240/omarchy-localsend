@@ -319,6 +319,7 @@ class Discovery:
         self.found = {}
         self.lock = threading.Lock()
         self.checking = set()
+        self.checks_per_ip = {}
         self.checkers = []
 
     def is_own(self, ip):
@@ -431,12 +432,16 @@ def accept_announced(discovery, device):
     with discovery.lock:
         if claim in discovery.checking or discovery.found.get(key, {}).get("verified"):
             return
-        # One host cannot use up the budget for everyone else.
-        from_ip = sum(1 for _k, ip, _p in discovery.checking if ip == device["ip"])
+        # Every check counts against its address for the whole run, failed
+        # ones too, so one host cannot use up the budget for everyone else.
+        # A forged source address gets around this; then devices may be
+        # missing from the list, but nothing is sent to the wrong one.
+        from_ip = discovery.checks_per_ip.get(device["ip"], 0)
         if from_ip >= MAX_CHECKS_PER_IP or len(discovery.checkers) >= MAX_CHECKS:
             return
+        discovery.checks_per_ip[device["ip"]] = from_ip + 1
         discovery.checking.add(claim)
-        checker = threading.Thread(target=verify_device, args=(discovery, device, claim), daemon=True)
+        checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
         # Started under the lock, so cmd_discover never joins a thread that
         # has not started yet.
         checker.start()
@@ -516,25 +521,18 @@ def multicast_round(discovery, deadline):
 
 VERIFY_TIMEOUT = 1.5
 MAX_CHECKS = 256
-MAX_CHECKS_PER_IP = 4
+MAX_CHECKS_PER_IP = 8
 
 
-def verify_device(discovery, device, claim=None):
+def verify_device(discovery, device):
     """Ask an https device for its info so its certificate can be checked;
-    a match is reported as verified, anything else is not reported. A
-    failed check frees its place in the per-address budget, so forged
-    announcements cannot keep the real device at that address unchecked;
-    the overall budget still counts it."""
-    checked = None
+    a match is reported as verified, anything else is not reported."""
     try:
         checked = probe_info(device["ip"], device["port"], "https", discovery.info["fingerprint"], timeout=VERIFY_TIMEOUT)
     except (OSError, ValueError, http.client.HTTPException):
-        pass
+        return
     if checked and device_key(checked) == device_key(device):
         report_device(discovery, checked)
-    elif claim is not None:
-        with discovery.lock:
-            discovery.checking.discard(claim)
 
 
 def register_with(device, info):
