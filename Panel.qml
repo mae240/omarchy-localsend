@@ -158,7 +158,10 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "󰒗"
-    labelText: root.barLabel
+    // Like the battery percentage: the label needs a wider slot, or it
+    // spills over the neighbouring icons, and a vertical bar has no room.
+    labelText: vertical ? "" : root.barLabel
+    slotSize: Style.bar.iconSlot * (labelText !== "" ? 2 : 1)
     foreground: root.barIconColor
     useActiveColor: false
     tooltipText: root.heroMeta
