@@ -100,6 +100,10 @@ the SHA-256 of its TLS certificate. The plugin checks it:
 Over http, which LocalSend offers as an option, nothing can be checked. Any
 device on the network can claim any name there.
 
+Certificate checks are limited per address and per scan. Someone who floods
+the network with announcements from forged addresses can keep devices out of
+the list for that scan, but cannot get a file sent to the wrong device.
+
 Device names and other strings from the network are length-limited and
 stripped of control characters before they are shown. Only the address,
 port, protocol and fingerprint reach the helper's command line, each
