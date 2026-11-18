@@ -8,8 +8,15 @@ events as they happen.
   status                       own alias, whether a receiver listens, own IPs
   discover [--timeout S]       nearby devices: multicast announce plus a
                                subnet scan, each device as it is found
-  send --ip IP --port PORT --protocol http|https [--pin PIN]
-       (--clipboard | FILE...) send files or the clipboard to one device
+  send --ip IP --port PORT --protocol http|https [--fingerprint FP]
+       [--pin PIN] (--clipboard | [--] FILE...)
+                               send files or the clipboard to one device
+
+Over https a LocalSend fingerprint is the SHA-256 of the device's TLS
+certificate, so it can be checked: discovery marks a device "verified" when
+its certificate matches the fingerprint it claims and drops it when it does
+not, and send refuses to talk to a peer whose certificate does not match
+--fingerprint. Over http nothing can be checked.
 
 Everything that comes back from the network is untrusted: strings are
 bounded and stripped of control characters, numbers are range-checked,
@@ -199,6 +206,7 @@ def sanitize_device(payload, ip, fallback_port=LOCALSEND_PORT, fallback_protocol
     except ValueError:
         return None
     return {
+        "verified": False,
         "alias": alias,
         "ip": ip_text,
         "port": port,
@@ -215,8 +223,9 @@ _CONTEXT = None
 
 
 def unverified_context():
-    """Peers use self-signed certificates, so nothing can be verified; the
-    client certificate is what identifies us to them."""
+    """Peers use self-signed certificates, so no CA can vouch for them. The
+    certificate hash is compared with the fingerprint instead, see
+    open_connection. The client certificate identifies us to them."""
     global _CONTEXT
     if _CONTEXT is None:
         context = ssl.create_default_context()
@@ -232,10 +241,32 @@ def unverified_context():
     return _CONTEXT
 
 
-def open_connection(ip, port, protocol, timeout):
-    if protocol == "https":
-        return http.client.HTTPSConnection(ip, port, timeout=timeout, context=unverified_context())
-    return http.client.HTTPConnection(ip, port, timeout=timeout)
+class FingerprintMismatch(Exception):
+    pass
+
+
+def normalize_fingerprint(value):
+    return str(value or "").strip().lower()
+
+
+def peer_fingerprint(conn):
+    der = conn.sock.getpeercert(binary_form=True) if conn.sock else None
+    return hashlib.sha256(der).hexdigest() if der else ""
+
+
+def open_connection(ip, port, protocol, timeout, expected_fingerprint=""):
+    """An open connection. Over https it is already connected, and when
+    expected_fingerprint is given the peer certificate must hash to it, or
+    FingerprintMismatch is raised before any request is sent."""
+    if protocol != "https":
+        return http.client.HTTPConnection(ip, port, timeout=timeout)
+    conn = http.client.HTTPSConnection(ip, port, timeout=timeout, context=unverified_context())
+    conn.connect()
+    expected = normalize_fingerprint(expected_fingerprint)
+    if expected and peer_fingerprint(conn) != expected:
+        conn.close()
+        raise FingerprintMismatch("certificate does not match the fingerprint")
+    return conn
 
 
 def read_json_body(response):
@@ -326,8 +357,10 @@ class RegisterServer(threading.Thread):
                     device = sanitize_device(json.loads(body.decode("utf-8", "replace") or "{}"), ip)
                 except ValueError:
                     device = None
-                if device:
+                if device and ip not in [own for own, _p, _n in self.own_ips]:
                     report_device(self.found, self.lock, device, self.own_ips, self.info["fingerprint"])
+                    if device["protocol"] == "https":
+                        threading.Thread(target=verify_device, args=(device, self.found, self.lock, self.own_ips, self.info), daemon=True).start()
                 payload = json.dumps(self.info).encode("utf-8")
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(payload) + payload)
             else:
@@ -342,11 +375,14 @@ class RegisterServer(threading.Thread):
 
 
 def report_device(found, lock, device, own_ips, own_fp):
-    if device["fingerprint"] and device["fingerprint"] == own_fp:
+    """Emit a device once per key. A verified record replaces an unverified
+    one with the same key and is emitted again."""
+    if device["fingerprint"] and normalize_fingerprint(device["fingerprint"]) == normalize_fingerprint(own_fp):
         return
-    key = device["fingerprint"] or "%s:%d" % (device["ip"], device["port"])
+    key = normalize_fingerprint(device["fingerprint"]) or "%s:%d" % (device["ip"], device["port"])
     with lock:
-        if key in found:
+        known = found.get(key)
+        if known and (known["verified"] or not device["verified"]):
             return
         found[key] = device
     emit(dict(device, event="device"))
@@ -400,6 +436,8 @@ def multicast_round(info, found, lock, own_ips, deadline):
                     device = sanitize_device(payload, addr[0])
                     if device:
                         report_device(found, lock, device, own_ips, info["fingerprint"])
+                        if device["protocol"] == "https":
+                            threading.Thread(target=verify_device, args=(device, found, lock, own_ips, info), daemon=True).start()
                         # Devices that announce want a register in return so they
                         # learn about us too; answering keeps us visible to them.
                         if payload.get("announce") is True:
@@ -421,6 +459,17 @@ def multicast_round(info, found, lock, own_ips, deadline):
         listener.close()
 
 
+def verify_device(device, found, lock, own_ips, info):
+    """Ask an https device for its info so its certificate can be checked;
+    a match reports it again as verified."""
+    try:
+        checked = probe_info(device["ip"], device["port"], "https", info["fingerprint"], timeout=1.5)
+    except (OSError, ValueError, http.client.HTTPException):
+        return
+    if checked and normalize_fingerprint(checked["fingerprint"]) == normalize_fingerprint(device["fingerprint"]):
+        report_device(found, lock, checked, own_ips, info["fingerprint"])
+
+
 def register_with(device, info):
     try:
         conn = open_connection(device["ip"], device["port"], device["protocol"], 2.0)
@@ -433,16 +482,25 @@ def register_with(device, info):
 
 
 def probe_info(ip, port, protocol, fingerprint, timeout=0.7):
+    """The device at ip:port, or None. Over https a device whose certificate
+    does not match the fingerprint it claims is dropped, one that matches is
+    marked verified."""
     conn = open_connection(ip, port, protocol, timeout)
     try:
-        conn.request("GET", "/api/localsend/v2/info?fingerprint=%s" % fingerprint)
+        cert_fingerprint = peer_fingerprint(conn) if protocol == "https" else ""
+        conn.request("GET", "/api/localsend/v2/info?fingerprint=%s" % quote(fingerprint))
         response = conn.getresponse()
         if response.status != 200:
             return None
         payload = read_json_body(response)
     finally:
         conn.close()
-    return sanitize_device(payload, ip, port, protocol)
+    device = sanitize_device(payload, ip, port, protocol)
+    if device and protocol == "https":
+        if not cert_fingerprint or normalize_fingerprint(device["fingerprint"]) != cert_fingerprint:
+            return None
+        device["verified"] = True
+    return device
 
 
 def scan_round(info, found, lock, own_ips, deadline):
@@ -487,6 +545,7 @@ def cmd_discover(args):
         server = RegisterServer(own_info(LOCALSEND_PORT, "http"), found, lock, own_ips)
         server.start()
         info = own_info(server.port, "http")
+        server.info = info
     except OSError:
         info = own_info(LOCALSEND_PORT, "http")
     deadline = time.monotonic() + max(0.5, min(args.timeout, 10.0))
@@ -535,7 +594,7 @@ def clipboard_payload():
         handle = tempfile.NamedTemporaryFile(prefix="clipboard-", suffix=suffix, delete=False)
         handle.write(data)
         handle.close()
-        return [file_entry(handle.name, "clipboard" + suffix, image_type)]
+        return [dict(file_entry(handle.name, "clipboard" + suffix, image_type), _temporary=True)]
     raise SendError("clipboardEmpty", "clipboard is empty")
 
 
@@ -579,20 +638,35 @@ def cmd_send(args):
     if not 1 <= args.port <= 65535 or args.protocol not in ("http", "https"):
         emit({"event": "error", "code": "badTarget", "message": "invalid port or protocol"})
         return 2
+    fingerprint = normalize_fingerprint(args.fingerprint)
+    if fingerprint and not all(c in "0123456789abcdef" for c in fingerprint):
+        # Not a certificate hash, so there is nothing to check it against.
+        fingerprint = ""
+    entries = []
     try:
         entries = clipboard_payload() if args.clipboard else [file_entry(path) for path in args.files]
         if not entries:
             raise SendError("nothingToSend", "no files given")
-        return run_transfer(ip, args.port, args.protocol, args.pin, entries)
+        return run_transfer(ip, args.port, args.protocol, args.pin, entries, fingerprint)
     except SendError as error:
         emit({"event": "error", "code": error.code, "message": str(error)})
         return 1
     except KeyboardInterrupt:
         emit({"event": "error", "code": "cancelled", "message": "cancelled"})
         return 130
+    finally:
+        for entry in entries:
+            if entry.get("_temporary"):
+                try:
+                    os.unlink(entry["_path"])
+                except OSError:
+                    pass
 
 
-def run_transfer(ip, port, protocol, pin, entries):
+def run_transfer(ip, port, protocol, pin, entries, fingerprint=""):
+    def connect(timeout):
+        return open_connection(ip, port, protocol, timeout, fingerprint)
+
     info = own_info(LOCALSEND_PORT, "https")
     files = {}
     for entry in entries:
@@ -603,14 +677,16 @@ def run_transfer(ip, port, protocol, pin, entries):
     # The receiver shows an accept dialog, so this request can legitimately
     # take as long as a person needs to notice it.
     try:
-        conn = open_connection(ip, port, protocol, 180.0)
-        path = "/api/localsend/v2/prepare-upload" + ("?pin=%s" % pin if pin else "")
+        conn = connect(180.0)
+        path = "/api/localsend/v2/prepare-upload" + ("?pin=%s" % quote(pin) if pin else "")
         conn.request("POST", path, body=json.dumps({"info": info, "files": files}),
                      headers={"Content-Type": "application/json"})
         response = conn.getresponse()
         status = response.status
         payload = read_json_body(response) if status == 200 else response.read(MAX_BODY)
         conn.close()
+    except FingerprintMismatch as error:
+        raise SendError("fingerprintMismatch", str(error))
     except ssl.SSLError as error:
         raise SendError("unreachable", "tls: %s" % error)
     except (OSError, http.client.HTTPException) as error:
@@ -652,7 +728,7 @@ def run_transfer(ip, port, protocol, pin, entries):
         query = "/api/localsend/v2/upload?sessionId=%s&fileId=%s&token=%s" % (
             quote(session_id), quote(entry["id"]), quote(token))
         try:
-            conn = open_connection(ip, port, protocol, 60.0)
+            conn = connect(60.0)
             conn.putrequest("POST", query)
             conn.putheader("Content-Type", "application/octet-stream")
             conn.putheader("Content-Length", str(entry["size"]))
@@ -688,13 +764,15 @@ def run_transfer(ip, port, protocol, pin, entries):
             response.read(MAX_BODY)
             conn.close()
         except KeyboardInterrupt:
-            cancel_session(ip, port, protocol, session_id)
+            cancel_session(ip, port, protocol, session_id, fingerprint)
             raise
+        except FingerprintMismatch as error:
+            raise SendError("fingerprintMismatch", str(error))
         except (OSError, http.client.HTTPException) as error:
-            cancel_session(ip, port, protocol, session_id)
+            cancel_session(ip, port, protocol, session_id, fingerprint)
             raise SendError("transferFailed", "%s: %s" % (entry["fileName"], error))
         if response.status != 200:
-            cancel_session(ip, port, protocol, session_id)
+            cancel_session(ip, port, protocol, session_id, fingerprint)
             raise SendError("transferFailed", "%s: upload returned %d" % (entry["fileName"], response.status))
         report(True)
         sent_total += entry["size"]
@@ -707,13 +785,13 @@ def quote(value):
     return url_quote(str(value), safe="")
 
 
-def cancel_session(ip, port, protocol, session_id):
+def cancel_session(ip, port, protocol, session_id, fingerprint=""):
     try:
-        conn = open_connection(ip, port, protocol, 5.0)
+        conn = open_connection(ip, port, protocol, 5.0, fingerprint)
         conn.request("POST", "/api/localsend/v2/cancel?sessionId=%s" % quote(session_id))
         conn.getresponse().read(MAX_BODY)
         conn.close()
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException, FingerprintMismatch):
         pass
 
 
@@ -738,6 +816,7 @@ def main(argv):
     send.add_argument("--ip", required=True)
     send.add_argument("--port", type=int, default=LOCALSEND_PORT)
     send.add_argument("--protocol", default="https")
+    send.add_argument("--fingerprint", default="")
     send.add_argument("--pin", default="")
     send.add_argument("--clipboard", action="store_true")
     send.add_argument("files", nargs="*")

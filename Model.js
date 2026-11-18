@@ -36,6 +36,13 @@ function isValidPort(port) {
   return isFinite(n) && n >= 1 && n <= 65535 && String(n) === String(port)
 }
 
+// A fingerprint as LocalSend sends it: a SHA-256 in hex over https, any
+// short token over http. Anything else is dropped so it never reaches the
+// helper's command line.
+function isValidFingerprint(value) {
+  return /^[A-Za-z0-9:_.-]{0,128}$/.test(String(value === undefined || value === null ? "" : value))
+}
+
 // Only a device record that can safely become helper arguments is a target.
 function isValidTarget(device) {
   return !!device && isValidIp(device.ip) && isValidPort(device.port)
@@ -54,7 +61,8 @@ function normalizeDevice(raw) {
     deviceType: String(raw.deviceType || "desktop"),
     deviceModel: bound(raw.deviceModel, 64),
     version: bound(raw.version, 16),
-    fingerprint: bound(raw.fingerprint, 128)
+    fingerprint: isValidFingerprint(raw.fingerprint) ? String(raw.fingerprint || "") : "",
+    verified: raw.verified === true
   }
   if (device.alias === "" || !isValidTarget(device)) return null
   return device
@@ -116,6 +124,24 @@ function toggleFavorite(favorites, device) {
   return next.slice(0, MAX_FAVORITES)
 }
 
+// A live device may stand in for a favorite with the same key unless it
+// would turn an https favorite into an http one: over http the fingerprint
+// cannot be checked, so anyone could claim it. Over https the helper checks
+// the certificate on every send, so a new address is fine.
+function canStandInFor(live, favorite) {
+  return !!live && !(favorite.protocol === "https" && live.protocol !== "https")
+}
+
+// A device that claims a favorite's fingerprint but may not stand in for
+// it, shown as an unknown device at its own address.
+function withoutFingerprint(device) {
+  var copy = {}
+  for (var key in device) copy[key] = device[key]
+  copy.fingerprint = ""
+  copy.verified = false
+  return copy
+}
+
 // The list the panel shows: favorites first, each updated from the live
 // device when it is on the network and marked offline when it is not,
 // then every other device that was found, both halves by alias.
@@ -124,19 +150,27 @@ function mergeDevices(discovered, favorites) {
   for (var i = 0; i < discovered.length; i++) byKey[deviceKey(discovered[i])] = discovered[i]
   var rows = []
   var used = {}
+  var refused = {}
   for (var f = 0; f < favorites.length; f++) {
     var key = deviceKey(favorites[f])
-    var live = byKey[key]
+    var live = canStandInFor(byKey[key], favorites[f]) ? byKey[key] : null
+    if (byKey[key] && !live) refused[key] = true
     var base = live || favorites[f]
     used[key] = true
     rows.push(withFlags(base, true, !!live))
   }
   var others = []
   for (var d = 0; d < discovered.length; d++) {
-    var k = deviceKey(discovered[d])
-    if (used[k]) continue
+    var device = discovered[d]
+    var k = deviceKey(device)
+    if (used[k]) {
+      if (!refused[k]) continue
+      device = withoutFingerprint(device)
+      k = deviceKey(device)
+      if (used[k]) continue
+    }
     used[k] = true
-    others.push(withFlags(discovered[d], false, true))
+    others.push(withFlags(device, false, true))
   }
   var byAlias = function(a, b) { return a.alias.toLowerCase() < b.alias.toLowerCase() ? -1 : (a.alias.toLowerCase() > b.alias.toLowerCase() ? 1 : 0) }
   rows.sort(byAlias)
@@ -167,6 +201,14 @@ function deviceSubtitle(device) {
   if (device.ip) parts.push(device.ip + (device.port && device.port !== 53317 ? ":" + device.port : ""))
   if (device.deviceModel) parts.push(device.deviceModel)
   return parts.join(" · ")
+}
+
+// The helper arguments that pin a send to the device's certificate. Over
+// http there is nothing to pin. The value is attached with "=" so it can
+// never be read as an option of its own.
+function fingerprintArgs(device) {
+  if (!device || device.protocol !== "https" || !device.fingerprint || !isValidFingerprint(device.fingerprint)) return []
+  return ["--fingerprint=" + device.fingerprint]
 }
 
 // Progress of the running transfer, 0..1.

@@ -203,6 +203,11 @@ Item {
     startSend(device, ["--clipboard"])
   }
 
+  function sendPaths(device, paths) {
+    // "--" ends the options, so a file whose name starts with "-" stays a file.
+    startSend(device, ["--"].concat(paths))
+  }
+
   function startSend(device, extra) {
     if (!Model.isValidTarget(device) || !device.online || sending) return
     sendTarget = device
@@ -212,11 +217,12 @@ Item {
     lastError = ""
     actionStatus = ""
     _sendFinished = false
-    // ip, port and protocol passed Model.isValidTarget, so they are safe as
-    // arguments; nothing else from the device record reaches the command.
+    // ip, port and protocol passed Model.isValidTarget and the fingerprint
+    // Model.isValidFingerprint, so they are safe as arguments; nothing else
+    // from the device record reaches the command.
     sendProcess.command = helperCommand.concat([
       "send", "--ip", String(device.ip), "--port", String(device.port), "--protocol", String(device.protocol)
-    ]).concat(extra)
+    ]).concat(Model.fingerprintArgs(device)).concat(extra)
     sendProcess.running = true
   }
 
@@ -385,7 +391,7 @@ Item {
         var lines = String(pickStdout.text || "").split("\n")
         var paths = []
         for (var i = 0; i < lines.length; i++) if (lines[i].trim() !== "") paths.push(lines[i])
-        if (paths.length > 0) root.startSend(root._pickTarget, paths)
+        if (paths.length > 0) root.sendPaths(root._pickTarget, paths)
       } else if (exitCode === 2) {
         root.lastError = root.t("localsend.chooserFailed")
       }

@@ -9,7 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
-           sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction }
+           sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
+           isValidFingerprint, fingerprintArgs }
 `)()
 
 const phone = { alias: "Pixel", ip: "192.168.0.23", port: 53317, protocol: "https", deviceType: "mobile", deviceModel: "Google", version: "2.1", fingerprint: "AAA" }
@@ -90,4 +91,44 @@ test("deviceSubtitle and deviceIcon", () => {
   assert.equal(Model.deviceSubtitle({ ...laptop, port: 53320 }), "192.168.0.50:53320")
   assert.equal(Model.deviceIcon("mobile"), "󰄜")
   assert.equal(Model.deviceIcon("whatever"), "󰌢")
+})
+
+test("fingerprints that could act as options or carry junk are dropped", () => {
+  assert.equal(Model.isValidFingerprint("10282E962A1D"), true)
+  assert.equal(Model.isValidFingerprint(""), true)
+  assert.equal(Model.isValidFingerprint("a b"), false)
+  assert.equal(Model.isValidFingerprint("x".repeat(129)), false)
+  assert.equal(Model.normalizeDevice({ ...phone, fingerprint: "AA; rm" }).fingerprint, "")
+  assert.equal(Model.normalizeDevice({ ...phone, verified: "yes" }).verified, false)
+  assert.equal(Model.normalizeDevice({ ...phone, verified: true }).verified, true)
+})
+
+test("an https favorite is not taken over by an http device with its fingerprint", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const impostor = { ...phone, ip: "192.168.0.66", protocol: "http" }
+  const rows = Model.mergeDevices([impostor], favorites)
+  assert.equal(rows.length, 2)
+  const favorite = rows.find(r => r.favorite)
+  assert.equal(favorite.online, false)
+  assert.equal(favorite.ip, "192.168.0.23")
+  assert.equal(favorite.protocol, "https")
+  const other = rows.find(r => !r.favorite)
+  assert.equal(other.ip, "192.168.0.66")
+  assert.equal(other.fingerprint, "", "the impostor keeps no claim on the fingerprint")
+  assert.equal(Model.isFavorite(favorites, other), false)
+})
+
+test("an https favorite follows its device to a new https address", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const rows = Model.mergeDevices([{ ...phone, ip: "192.168.0.77" }], favorites)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, true)
+  assert.equal(rows[0].ip, "192.168.0.77")
+})
+
+test("sends over https are pinned to the fingerprint, http sends are not", () => {
+  assert.deepEqual(Model.fingerprintArgs(phone), ["--fingerprint=AAA"])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, protocol: "http" }), [])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "" }), [])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "a b" }), [])
 })
