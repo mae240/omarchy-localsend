@@ -249,6 +249,11 @@ def normalize_fingerprint(value):
     return str(value or "").strip().lower()
 
 
+def is_certificate_hash(value):
+    value = normalize_fingerprint(value)
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
 def peer_fingerprint(conn):
     der = conn.sock.getpeercert(binary_form=True) if conn.sock else None
     return hashlib.sha256(der).hexdigest() if der else ""
@@ -639,9 +644,10 @@ def cmd_send(args):
         emit({"event": "error", "code": "badTarget", "message": "invalid port or protocol"})
         return 2
     fingerprint = normalize_fingerprint(args.fingerprint)
-    if fingerprint and not all(c in "0123456789abcdef" for c in fingerprint):
-        # Not a certificate hash, so there is nothing to check it against.
-        fingerprint = ""
+    if fingerprint and (args.protocol != "https" or not is_certificate_hash(fingerprint)):
+        # A pin that cannot be checked must not turn into no pin at all.
+        emit({"event": "error", "code": "badTarget", "message": "fingerprint is not a certificate hash"})
+        return 2
     entries = []
     try:
         entries = clipboard_payload() if args.clipboard else [file_entry(path) for path in args.files]

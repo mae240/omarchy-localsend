@@ -116,6 +116,12 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(events[-1]["code"], "fingerprintMismatch")
         self.assertEqual(FakeLocalSend.requests, [])
 
+    def test_send_refuses_a_pin_that_is_not_a_certificate_hash(self):
+        code, events = self.send("not-a-hash")
+        self.assertEqual(code, 2)
+        self.assertEqual(events[-1]["code"], "badTarget")
+        self.assertEqual(FakeLocalSend.requests, [])
+
     def test_a_verified_record_replaces_an_unverified_one(self):
         found, lock = {}, threading.Lock()
         base = {"fingerprint": "AB", "ip": "10.0.0.1", "port": 1, "verified": False}

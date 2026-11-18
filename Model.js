@@ -43,6 +43,12 @@ function isValidFingerprint(value) {
   return /^[A-Za-z0-9:_.-]{0,128}$/.test(String(value === undefined || value === null ? "" : value))
 }
 
+// The SHA-256 of a TLS certificate, the only fingerprint an https device
+// can be held to.
+function isCertificateHash(value) {
+  return /^[0-9A-Fa-f]{64}$/.test(String(value || ""))
+}
+
 // Only a device record that can safely become helper arguments is a target.
 function isValidTarget(device) {
   return !!device && isValidIp(device.ip) && isValidPort(device.port)
@@ -65,6 +71,12 @@ function normalizeDevice(raw) {
     verified: raw.verified === true
   }
   if (device.alias === "" || !isValidTarget(device)) return null
+  // Over https only a certificate hash can be checked; anything else is
+  // no fingerprint, and the device is keyed by its address.
+  if (device.protocol === "https" && !isCertificateHash(device.fingerprint)) {
+    device.fingerprint = ""
+    device.verified = false
+  }
   return device
 }
 
@@ -124,12 +136,14 @@ function toggleFavorite(favorites, device) {
   return next.slice(0, MAX_FAVORITES)
 }
 
-// A live device may stand in for a favorite with the same key unless it
-// would turn an https favorite into an http one: over http the fingerprint
-// cannot be checked, so anyone could claim it. Over https the helper checks
-// the certificate on every send, so a new address is fine.
+// A live device may stand in for a favorite with the same key. For an https
+// favorite it must be https too and verified, meaning the helper saw a
+// certificate that hashes to the fingerprint. Over http nothing can be
+// checked, so an http favorite takes what it gets.
 function canStandInFor(live, favorite) {
-  return !!live && !(favorite.protocol === "https" && live.protocol !== "https")
+  if (!live) return false
+  if (favorite.protocol !== "https") return true
+  return live.protocol === "https" && live.verified === true
 }
 
 // A device that claims a favorite's fingerprint but may not stand in for
@@ -207,7 +221,7 @@ function deviceSubtitle(device) {
 // http there is nothing to pin. The value is attached with "=" so it can
 // never be read as an option of its own.
 function fingerprintArgs(device) {
-  if (!device || device.protocol !== "https" || !device.fingerprint || !isValidFingerprint(device.fingerprint)) return []
+  if (!device || device.protocol !== "https" || !isCertificateHash(device.fingerprint)) return []
   return ["--fingerprint=" + device.fingerprint]
 }
 
