@@ -505,6 +505,10 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
         Layout.alignment: Qt.AlignVCenter
+        // Phone and laptop glyphs differ in width; a fixed slot keeps the
+        // device names in one column.
+        Layout.preferredWidth: Style.font.icon * 1.4
+        horizontalAlignment: Text.AlignHCenter
       }
 
       ColumnLayout {
@@ -544,7 +548,7 @@ Panel {
       }
 
       PanelActionButton {
-        iconText: "󰅐"
+        iconText: "󰅌"
         tooltipText: strings.t("localsend.sendClipboard")
         foreground: root.foreground
         fontFamily: root.fontFamily
