@@ -156,18 +156,16 @@ Item {
     if (!event) return
     if (event.event === "device") {
       var device = Model.normalizeDevice(event)
-      if (!device || _scanDevices.length >= 200) return
-      _scanDevices = _scanDevices.concat([device])
+      if (!device) return
+      // A later event for the same device (now verified) replaces the
+      // earlier one; the cap holds back new devices only.
+      var next = Model.addCapped(_scanDevices, device, 200)
+      if (next === null) return
+      // An entry the newcomer pushed out leaves the visible list at once.
+      var shown = Model.withoutDropped(discovered, _scanDevices, next)
+      _scanDevices = next
       // Show it the moment it answers; the list settles when the scan ends.
-      var key = Model.deviceKey(device)
-      var next = []
-      var replaced = false
-      for (var i = 0; i < discovered.length; i++) {
-        if (Model.deviceKey(discovered[i]) === key) { next.push(device); replaced = true }
-        else next.push(discovered[i])
-      }
-      if (!replaced) next.push(device)
-      discovered = next
+      discovered = Model.upsertDevice(shown, device)
     } else if (event.event === "done") {
       discovered = _scanDevices
     }
@@ -203,6 +201,11 @@ Item {
     startSend(device, ["--clipboard"])
   }
 
+  function sendPaths(device, paths) {
+    // "--" ends the options, so a file whose name starts with "-" stays a file.
+    startSend(device, ["--"].concat(paths))
+  }
+
   function startSend(device, extra) {
     if (!Model.isValidTarget(device) || !device.online || sending) return
     sendTarget = device
@@ -212,11 +215,12 @@ Item {
     lastError = ""
     actionStatus = ""
     _sendFinished = false
-    // ip, port and protocol passed Model.isValidTarget, so they are safe as
-    // arguments; nothing else from the device record reaches the command.
+    // ip, port and protocol passed Model.isValidTarget and the fingerprint
+    // Model.isValidFingerprint, so they are safe as arguments; nothing else
+    // from the device record reaches the command.
     sendProcess.command = helperCommand.concat([
       "send", "--ip", String(device.ip), "--port", String(device.port), "--protocol", String(device.protocol)
-    ]).concat(extra)
+    ]).concat(Model.fingerprintArgs(device)).concat(extra)
     sendProcess.running = true
   }
 
@@ -385,7 +389,7 @@ Item {
         var lines = String(pickStdout.text || "").split("\n")
         var paths = []
         for (var i = 0; i < lines.length; i++) if (lines[i].trim() !== "") paths.push(lines[i])
-        if (paths.length > 0) root.startSend(root._pickTarget, paths)
+        if (paths.length > 0) root.sendPaths(root._pickTarget, paths)
       } else if (exitCode === 2) {
         root.lastError = root.t("localsend.chooserFailed")
       }

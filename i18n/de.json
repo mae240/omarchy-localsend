@@ -38,6 +38,7 @@
   "localsend.err.transferFailed": "Die Übertragung ist abgebrochen",
   "localsend.err.clipboardEmpty": "Die Zwischenablage enthält weder Text noch Bild",
   "localsend.err.fileMissing": "Eine gewählte Datei gibt es nicht mehr",
+  "localsend.err.fingerprintMismatch": "Das Gerät weist sich mit einem anderen Zertifikat aus als gespeichert. Nichts gesendet",
   "localsend.err.cancelled": "Abgebrochen",
   "localsend.err.generic": "Senden fehlgeschlagen"
 }

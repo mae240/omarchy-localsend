@@ -9,10 +9,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
-           sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction }
+           sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
+           isValidFingerprint, fingerprintArgs, upsertDevice, containsKey, addCapped, withoutDropped }
 `)()
 
-const phone = { alias: "Pixel", ip: "192.168.0.23", port: 53317, protocol: "https", deviceType: "mobile", deviceModel: "Google", version: "2.1", fingerprint: "AAA" }
+const FP = "10282E962A1D0334718B6E54314C8DC91855077DE93477ED26845E0F6359548D"
+const phone = { alias: "Pixel", ip: "192.168.0.23", port: 53317, protocol: "https", deviceType: "mobile", deviceModel: "Google", version: "2.1", fingerprint: FP, verified: true }
 const laptop = { alias: "book", ip: "192.168.0.50", port: 53317, protocol: "http", deviceType: "desktop", deviceModel: "", version: "2.0", fingerprint: "" }
 
 test("parseEvent only accepts JSON objects with an event", () => {
@@ -40,7 +42,7 @@ test("normalizeDevice bounds strings and keeps markup as plain data", () => {
 })
 
 test("deviceKey prefers the fingerprint, falls back to address", () => {
-  assert.equal(Model.deviceKey(phone), "fp:AAA")
+  assert.equal(Model.deviceKey(phone), "fp:" + FP)
   assert.equal(Model.deviceKey(laptop), "addr:192.168.0.50:53317")
 })
 
@@ -90,4 +92,91 @@ test("deviceSubtitle and deviceIcon", () => {
   assert.equal(Model.deviceSubtitle({ ...laptop, port: 53320 }), "192.168.0.50:53320")
   assert.equal(Model.deviceIcon("mobile"), "󰄜")
   assert.equal(Model.deviceIcon("whatever"), "󰌢")
+})
+
+test("fingerprints that could act as options or carry junk are dropped", () => {
+  assert.equal(Model.isValidFingerprint("10282E962A1D"), true)
+  assert.equal(Model.isValidFingerprint(""), true)
+  assert.equal(Model.isValidFingerprint("a b"), false)
+  assert.equal(Model.isValidFingerprint("x".repeat(129)), false)
+  assert.equal(Model.normalizeDevice({ ...phone, fingerprint: "AA; rm" }).fingerprint, "")
+  assert.equal(Model.normalizeDevice({ ...phone, verified: "yes" }).verified, false)
+  assert.equal(Model.normalizeDevice({ ...phone, fingerprint: "AAA" }).fingerprint, "", "https needs a certificate hash")
+  assert.equal(Model.normalizeDevice({ ...phone, protocol: "http", fingerprint: "AAA" }).fingerprint, "AAA")
+  assert.equal(Model.normalizeDevice({ ...phone, verified: true }).verified, true)
+})
+
+test("an https favorite is not taken over by an http device with its fingerprint", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const impostor = { ...phone, ip: "192.168.0.66", protocol: "http" }
+  const rows = Model.mergeDevices([impostor], favorites)
+  assert.equal(rows.length, 1, "no second row with the favorite's name")
+  assert.equal(rows[0].favorite, true)
+  assert.equal(rows[0].online, false)
+  assert.equal(rows[0].ip, "192.168.0.23")
+  assert.equal(rows[0].protocol, "https")
+})
+
+test("an https favorite follows its device to a new https address", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const rows = Model.mergeDevices([{ ...phone, ip: "192.168.0.77" }], favorites)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, true)
+  assert.equal(rows[0].ip, "192.168.0.77")
+})
+
+test("an unverified https device does not take over a favorite", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const rows = Model.mergeDevices([{ ...phone, ip: "192.168.0.66", verified: false }], favorites)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, false)
+})
+
+test("sends over https are pinned to the fingerprint, http sends are not", () => {
+  assert.deepEqual(Model.fingerprintArgs(phone), ["--fingerprint=" + FP])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, protocol: "http" }), [])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "" }), [])
+  assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "a b" }), [])
+})
+
+test("fingerprints match without regard to case", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const rows = Model.mergeDevices([{ ...phone, fingerprint: FP.toLowerCase() }], favorites)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, true)
+})
+
+test("upsertDevice replaces the entry with the same key", () => {
+  const unverified = { ...phone, verified: false }
+  let list = Model.upsertDevice([], unverified)
+  list = Model.upsertDevice(list, laptop)
+  list = Model.upsertDevice(list, phone)
+  assert.equal(list.length, 2)
+  assert.equal(list[0].verified, true)
+  list = Model.upsertDevice(list, { ...phone, ip: "192.168.0.66", protocol: "http", verified: false })
+  assert.equal(list[0].ip, "192.168.0.23", "an unverified claim does not replace a verified device")
+  assert.equal(list[0].protocol, "https")
+})
+
+test("containsKey finds a device by key", () => {
+  assert.equal(Model.containsKey([phone], Model.deviceKey({ ...phone, ip: "10.0.0.1" })), true)
+  assert.equal(Model.containsKey([phone], Model.deviceKey(laptop)), false)
+})
+
+test("a full list makes room for a verified device, not for an unverified one", () => {
+  const flood = []
+  for (let i = 0; i < 3; i++) flood.push({ ...laptop, alias: "x" + i, ip: "10.0.0." + (i + 1) })
+  assert.equal(Model.addCapped(flood, { ...laptop, ip: "10.0.0.9" }, 3), null)
+  const next = Model.addCapped(flood, phone, 3)
+  assert.equal(next.length, 3)
+  assert.equal(next[2].alias, "Pixel")
+  assert.equal(Model.addCapped([phone], { ...phone, ip: "10.0.0.5" }, 1)[0].ip, "10.0.0.5")
+})
+
+test("withoutDropped removes entries a newcomer pushed out", () => {
+  const before = [laptop, { ...laptop, ip: "10.0.0.2" }]
+  const after = [{ ...laptop, ip: "10.0.0.2" }, phone]
+  const visible = Model.withoutDropped(before, before, after)
+  assert.deepEqual(visible.map(d => d.ip), ["10.0.0.2"])
+  assert.equal(Model.withoutDropped(before, before, before.concat([phone])), before)
 })

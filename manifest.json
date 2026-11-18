@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "mae.localsend",
   "name": "LocalSend",
-  "version": "1.0.0",
-  "author": "mae",
+  "version": "1.1.0",
+  "author": "mae240",
   "license": "MIT",
   "description": "Nearby LocalSend devices in the Omarchy bar: send files or the clipboard to one, keep favorites, and switch the receiver on and off.",
   "kinds": [

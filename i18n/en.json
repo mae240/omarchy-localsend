@@ -38,6 +38,7 @@
   "localsend.err.transferFailed": "The transfer broke off",
   "localsend.err.clipboardEmpty": "The clipboard holds no text or image",
   "localsend.err.fileMissing": "A chosen file no longer exists",
+  "localsend.err.fingerprintMismatch": "The device presented a different certificate than the one on record. Nothing was sent",
   "localsend.err.cancelled": "Cancelled",
   "localsend.err.generic": "Sending failed"
 }
