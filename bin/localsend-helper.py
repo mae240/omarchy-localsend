@@ -58,9 +58,16 @@ STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser(
 PREFS_PATH = os.path.expanduser("~/.local/share/org.localsend.localsend_app/shared_preferences.json")
 
 
+_EMIT_LOCK = threading.Lock()
+
+
 def emit(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # Discovery emits from several threads; one lock keeps every event on a
+    # line of its own.
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def clean_text(value, limit):
@@ -301,11 +308,32 @@ def cmd_status(args):
 
 # ------------------------------------------------------------------- discover
 
+class Discovery:
+    """What one discover run shares between its threads: the devices found
+    so far, keyed by normalized fingerprint or address, the https devices
+    whose certificate is being checked, and the threads doing that."""
+
+    def __init__(self, own_ips):
+        self.own_ips = own_ips
+        self.info = None
+        self.found = {}
+        self.lock = threading.Lock()
+        self.checking = set()
+        self.checkers = []
+
+    def is_own(self, ip):
+        return ip in [own for own, _p, _n in self.own_ips]
+
+
+def device_key(device):
+    return normalize_fingerprint(device["fingerprint"]) or "%s:%d" % (device["ip"], device["port"])
+
+
 class RegisterServer(threading.Thread):
     """Minimal HTTP listener for the /register calls devices answer an
     announce with. Only POSTs with a small JSON body are accepted."""
 
-    def __init__(self, info, found, lock, own_ips):
+    def __init__(self, discovery):
         super().__init__(daemon=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -313,10 +341,7 @@ class RegisterServer(threading.Thread):
         self.sock.listen(16)
         self.sock.settimeout(0.2)
         self.port = self.sock.getsockname()[1]
-        self.info = info
-        self.found = found
-        self.lock = lock
-        self.own_ips = own_ips
+        self.discovery = discovery
         self.stop = threading.Event()
 
     def run(self):
@@ -362,11 +387,9 @@ class RegisterServer(threading.Thread):
                     device = sanitize_device(json.loads(body.decode("utf-8", "replace") or "{}"), ip)
                 except ValueError:
                     device = None
-                if device and ip not in [own for own, _p, _n in self.own_ips]:
-                    report_device(self.found, self.lock, device, self.own_ips, self.info["fingerprint"])
-                    if device["protocol"] == "https":
-                        threading.Thread(target=verify_device, args=(device, self.found, self.lock, self.own_ips, self.info), daemon=True).start()
-                payload = json.dumps(self.info).encode("utf-8")
+                if device and not self.discovery.is_own(ip):
+                    accept_announced(self.discovery, device)
+                payload = json.dumps(self.discovery.info).encode("utf-8")
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(payload) + payload)
             else:
                 conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -379,22 +402,42 @@ class RegisterServer(threading.Thread):
                 pass
 
 
-def report_device(found, lock, device, own_ips, own_fp):
+def report_device(discovery, device):
     """Emit a device once per key. A verified record replaces an unverified
     one with the same key and is emitted again."""
-    if device["fingerprint"] and normalize_fingerprint(device["fingerprint"]) == normalize_fingerprint(own_fp):
+    key = device_key(device)
+    if key == normalize_fingerprint(discovery.info["fingerprint"]):
         return
-    key = normalize_fingerprint(device["fingerprint"]) or "%s:%d" % (device["ip"], device["port"])
-    with lock:
-        known = found.get(key)
+    with discovery.lock:
+        known = discovery.found.get(key)
         if known and (known["verified"] or not device["verified"]):
             return
-        found[key] = device
+        discovery.found[key] = device
     emit(dict(device, event="device"))
 
 
-def multicast_round(info, found, lock, own_ips, deadline):
+def accept_announced(discovery, device):
+    """A device that announced itself or registered with us. Its claims are
+    unchecked: an http device is reported as it is, an https device only
+    after its certificate matched the fingerprint it claims. Each key is
+    checked once per run."""
+    if device["protocol"] != "https":
+        report_device(discovery, device)
+        return
+    key = device_key(device)
+    with discovery.lock:
+        if key in discovery.checking or discovery.found.get(key, {}).get("verified"):
+            return
+        discovery.checking.add(key)
+        checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
+        discovery.checkers.append(checker)
+    checker.start()
+
+
+def multicast_round(discovery, deadline):
     """Announce on every interface and collect UDP answers until deadline."""
+    info = discovery.info
+    own_ips = discovery.own_ips
     message = json.dumps(dict(info, announce=True)).encode("utf-8")
     listener = None
     try:
@@ -437,12 +480,10 @@ def multicast_round(info, found, lock, own_ips, deadline):
                     payload = json.loads(data.decode("utf-8", "replace"))
                 except ValueError:
                     payload = None
-                if isinstance(payload, dict) and addr[0] not in [ip for ip, _p, _n in own_ips]:
+                if isinstance(payload, dict) and not discovery.is_own(addr[0]):
                     device = sanitize_device(payload, addr[0])
                     if device:
-                        report_device(found, lock, device, own_ips, info["fingerprint"])
-                        if device["protocol"] == "https":
-                            threading.Thread(target=verify_device, args=(device, found, lock, own_ips, info), daemon=True).start()
+                        accept_announced(discovery, device)
                         # Devices that announce want a register in return so they
                         # learn about us too; answering keeps us visible to them.
                         if payload.get("announce") is True:
@@ -464,15 +505,18 @@ def multicast_round(info, found, lock, own_ips, deadline):
         listener.close()
 
 
-def verify_device(device, found, lock, own_ips, info):
+VERIFY_TIMEOUT = 1.5
+
+
+def verify_device(discovery, device):
     """Ask an https device for its info so its certificate can be checked;
-    a match reports it again as verified."""
+    a match is reported as verified, anything else is not reported."""
     try:
-        checked = probe_info(device["ip"], device["port"], "https", info["fingerprint"], timeout=1.5)
+        checked = probe_info(device["ip"], device["port"], "https", discovery.info["fingerprint"], timeout=VERIFY_TIMEOUT)
     except (OSError, ValueError, http.client.HTTPException):
         return
-    if checked and normalize_fingerprint(checked["fingerprint"]) == normalize_fingerprint(device["fingerprint"]):
-        report_device(found, lock, checked, own_ips, info["fingerprint"])
+    if checked and device_key(checked) == device_key(device):
+        report_device(discovery, checked)
 
 
 def register_with(device, info):
@@ -508,8 +552,10 @@ def probe_info(ip, port, protocol, fingerprint, timeout=0.7):
     return device
 
 
-def scan_round(info, found, lock, own_ips, deadline):
+def scan_round(discovery, deadline):
     """Ask every host of the own /24 networks for its info; https then http."""
+    info = discovery.info
+    own_ips = discovery.own_ips
     targets = []
     seen = set()
     for ip, prefix, _name in own_ips:
@@ -534,7 +580,7 @@ def scan_round(info, found, lock, own_ips, deadline):
             except (OSError, ValueError, http.client.HTTPException):
                 return
             if device:
-                report_device(found, lock, device, own_ips, info["fingerprint"])
+                report_device(discovery, device)
             return
 
     with ThreadPoolExecutor(max_workers=64) as pool:
@@ -542,28 +588,33 @@ def scan_round(info, found, lock, own_ips, deadline):
 
 
 def cmd_discover(args):
-    own_ips = own_ipv4_addresses()
-    found = {}
-    lock = threading.Lock()
+    discovery = Discovery(own_ipv4_addresses())
     server = None
     try:
-        server = RegisterServer(own_info(LOCALSEND_PORT, "http"), found, lock, own_ips)
+        server = RegisterServer(discovery)
+        discovery.info = own_info(server.port, "http")
         server.start()
-        info = own_info(server.port, "http")
-        server.info = info
     except OSError:
-        info = own_info(LOCALSEND_PORT, "http")
+        discovery.info = own_info(LOCALSEND_PORT, "http")
     deadline = time.monotonic() + max(0.5, min(args.timeout, 10.0))
-    threads = [threading.Thread(target=multicast_round, args=(info, found, lock, own_ips, deadline), daemon=True)]
+    threads = [threading.Thread(target=multicast_round, args=(discovery, deadline), daemon=True)]
     if not args.no_scan:
-        threads.append(threading.Thread(target=scan_round, args=(info, found, lock, own_ips, deadline), daemon=True))
+        threads.append(threading.Thread(target=scan_round, args=(discovery, deadline), daemon=True))
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=max(0.0, deadline - time.monotonic()) + 3.0)
     if server is not None:
         server.stop.set()
-    emit({"event": "done", "count": len(found)})
+    # Certificate checks started late still get to finish, so a device that
+    # announced itself near the end is not lost.
+    with discovery.lock:
+        checkers = list(discovery.checkers)
+    for checker in checkers:
+        checker.join(timeout=VERIFY_TIMEOUT + 1.0)
+    with discovery.lock:
+        count = len(discovery.found)
+    emit({"event": "done", "count": count})
     return 0
 
 
@@ -597,8 +648,14 @@ def clipboard_payload():
             raise SendError("clipboardEmpty", "clipboard is empty")
         suffix = mimetypes.guess_extension(image_type) or ".png"
         handle = tempfile.NamedTemporaryFile(prefix="clipboard-", suffix=suffix, delete=False)
-        handle.write(data)
-        handle.close()
+        try:
+            handle.write(data)
+            handle.close()
+        except BaseException:
+            # Also on a cancel, which arrives as KeyboardInterrupt.
+            handle.close()
+            os.unlink(handle.name)
+            raise
         return [dict(file_entry(handle.name, "clipboard" + suffix, image_type), _temporary=True)]
     raise SendError("clipboardEmpty", "clipboard is empty")
 

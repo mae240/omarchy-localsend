@@ -122,16 +122,45 @@ class PinningTest(unittest.TestCase):
         self.assertEqual(events[-1]["code"], "badTarget")
         self.assertEqual(FakeLocalSend.requests, [])
 
+    def discovery(self):
+        discovery = helper.Discovery([])
+        discovery.info = {"fingerprint": "own"}
+        return discovery
+
     def test_a_verified_record_replaces_an_unverified_one(self):
-        found, lock = {}, threading.Lock()
+        discovery = self.discovery()
         base = {"fingerprint": "AB", "ip": "10.0.0.1", "port": 1, "verified": False}
         with redirect_stdout(io.StringIO()) as out:
-            helper.report_device(found, lock, base, [], "own")
-            helper.report_device(found, lock, dict(base), [], "own")
-            helper.report_device(found, lock, dict(base, verified=True), [], "own")
-            helper.report_device(found, lock, dict(base), [], "own")
+            helper.report_device(discovery, base)
+            helper.report_device(discovery, dict(base))
+            helper.report_device(discovery, dict(base, fingerprint="ab", verified=True))
+            helper.report_device(discovery, dict(base))
         self.assertEqual(len(out.getvalue().splitlines()), 2)
-        self.assertTrue(found["ab"]["verified"])
+        self.assertTrue(discovery.found["ab"]["verified"])
+
+    def announced(self, fingerprint):
+        return {"alias": "Fake", "ip": "127.0.0.1", "port": self.port, "protocol": "https",
+                "fingerprint": fingerprint, "verified": False}
+
+    def run_announce(self, *devices):
+        discovery = self.discovery()
+        with redirect_stdout(io.StringIO()) as out:
+            for device in devices:
+                helper.accept_announced(discovery, device)
+            for checker in discovery.checkers:
+                checker.join(5)
+        return discovery, [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_an_announced_https_device_appears_only_after_its_certificate_matched(self):
+        discovery, events = self.run_announce(self.announced(self.fingerprint), self.announced(self.fingerprint))
+        self.assertEqual(len(discovery.checkers), 1, "each key is checked once")
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["verified"])
+
+    def test_an_announced_https_impostor_never_appears(self):
+        FakeLocalSend.claimed_fingerprint = self.other_fingerprint
+        discovery, events = self.run_announce(self.announced(self.other_fingerprint))
+        self.assertEqual(events, [])
 
 
 class ClipboardTest(unittest.TestCase):

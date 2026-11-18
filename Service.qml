@@ -157,17 +157,11 @@ Item {
     if (event.event === "device") {
       var device = Model.normalizeDevice(event)
       if (!device || _scanDevices.length >= 200) return
-      _scanDevices = _scanDevices.concat([device])
+      // A later event for the same device (now verified) replaces the
+      // earlier one in both lists.
+      _scanDevices = Model.upsertDevice(_scanDevices, device)
       // Show it the moment it answers; the list settles when the scan ends.
-      var key = Model.deviceKey(device)
-      var next = []
-      var replaced = false
-      for (var i = 0; i < discovered.length; i++) {
-        if (Model.deviceKey(discovered[i]) === key) { next.push(device); replaced = true }
-        else next.push(discovered[i])
-      }
-      if (!replaced) next.push(device)
-      discovered = next
+      discovered = Model.upsertDevice(discovered, device)
     } else if (event.event === "done") {
       discovered = _scanDevices
     }

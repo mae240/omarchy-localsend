@@ -10,7 +10,7 @@ const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const Model = new Function(source + `
   return { parseEvent, isValidIp, isValidPort, isValidTarget, normalizeDevice, deviceKey, deviceIcon, favoriteEntry,
            sanitizeFavorites, isFavorite, toggleFavorite, mergeDevices, formatBytes, deviceSubtitle, transferFraction,
-           isValidFingerprint, fingerprintArgs }
+           isValidFingerprint, fingerprintArgs, upsertDevice }
 `)()
 
 const FP = "10282E962A1D0334718B6E54314C8DC91855077DE93477ED26845E0F6359548D"
@@ -110,15 +110,11 @@ test("an https favorite is not taken over by an http device with its fingerprint
   const favorites = Model.toggleFavorite([], phone)
   const impostor = { ...phone, ip: "192.168.0.66", protocol: "http" }
   const rows = Model.mergeDevices([impostor], favorites)
-  assert.equal(rows.length, 2)
-  const favorite = rows.find(r => r.favorite)
-  assert.equal(favorite.online, false)
-  assert.equal(favorite.ip, "192.168.0.23")
-  assert.equal(favorite.protocol, "https")
-  const other = rows.find(r => !r.favorite)
-  assert.equal(other.ip, "192.168.0.66")
-  assert.equal(other.fingerprint, "", "the impostor keeps no claim on the fingerprint")
-  assert.equal(Model.isFavorite(favorites, other), false)
+  assert.equal(rows.length, 1, "no second row with the favorite's name")
+  assert.equal(rows[0].favorite, true)
+  assert.equal(rows[0].online, false)
+  assert.equal(rows[0].ip, "192.168.0.23")
+  assert.equal(rows[0].protocol, "https")
 })
 
 test("an https favorite follows its device to a new https address", () => {
@@ -132,9 +128,8 @@ test("an https favorite follows its device to a new https address", () => {
 test("an unverified https device does not take over a favorite", () => {
   const favorites = Model.toggleFavorite([], phone)
   const rows = Model.mergeDevices([{ ...phone, ip: "192.168.0.66", verified: false }], favorites)
-  assert.equal(rows.length, 2)
-  assert.equal(rows.find(r => r.favorite).online, false)
-  assert.equal(rows.find(r => !r.favorite).fingerprint, "")
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, false)
 })
 
 test("sends over https are pinned to the fingerprint, http sends are not", () => {
@@ -142,4 +137,20 @@ test("sends over https are pinned to the fingerprint, http sends are not", () =>
   assert.deepEqual(Model.fingerprintArgs({ ...phone, protocol: "http" }), [])
   assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "" }), [])
   assert.deepEqual(Model.fingerprintArgs({ ...phone, fingerprint: "a b" }), [])
+})
+
+test("fingerprints match without regard to case", () => {
+  const favorites = Model.toggleFavorite([], phone)
+  const rows = Model.mergeDevices([{ ...phone, fingerprint: FP.toLowerCase() }], favorites)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].online, true)
+})
+
+test("upsertDevice replaces the entry with the same key", () => {
+  const unverified = { ...phone, verified: false }
+  let list = Model.upsertDevice([], unverified)
+  list = Model.upsertDevice(list, laptop)
+  list = Model.upsertDevice(list, phone)
+  assert.equal(list.length, 2)
+  assert.equal(list[0].verified, true)
 })

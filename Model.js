@@ -80,9 +80,10 @@ function normalizeDevice(raw) {
   return device
 }
 
+// Fingerprints compare without regard to case, as in the helper.
 function deviceKey(device) {
   if (!device) return ""
-  if (device.fingerprint) return "fp:" + device.fingerprint
+  if (device.fingerprint) return "fp:" + String(device.fingerprint).toUpperCase()
   return "addr:" + device.ip + ":" + device.port
 }
 
@@ -146,45 +147,45 @@ function canStandInFor(live, favorite) {
   return live.protocol === "https" && live.verified === true
 }
 
-// A device that claims a favorite's fingerprint but may not stand in for
-// it, shown as an unknown device at its own address.
-function withoutFingerprint(device) {
-  var copy = {}
-  for (var key in device) copy[key] = device[key]
-  copy.fingerprint = ""
-  copy.verified = false
-  return copy
+// The list with device in place of the entry that has its key, or added
+// at the end.
+function upsertDevice(list, device) {
+  var key = deviceKey(device)
+  var next = []
+  var replaced = false
+  for (var i = 0; i < list.length; i++) {
+    if (deviceKey(list[i]) === key) { next.push(device); replaced = true }
+    else next.push(list[i])
+  }
+  if (!replaced) next.push(device)
+  return next
 }
 
 // The list the panel shows: favorites first, each updated from the live
 // device when it is on the network and marked offline when it is not,
-// then every other device that was found, both halves by alias.
+// then every other device that was found, both halves by alias. A device
+// that claims a favorite's fingerprint but may not stand in for it is left
+// out: it is an impostor, or the real device before its certificate was
+// checked, and a second row with the favorite's name would invite a send
+// to the wrong one.
 function mergeDevices(discovered, favorites) {
   var byKey = {}
   for (var i = 0; i < discovered.length; i++) byKey[deviceKey(discovered[i])] = discovered[i]
   var rows = []
   var used = {}
-  var refused = {}
   for (var f = 0; f < favorites.length; f++) {
     var key = deviceKey(favorites[f])
     var live = canStandInFor(byKey[key], favorites[f]) ? byKey[key] : null
-    if (byKey[key] && !live) refused[key] = true
     var base = live || favorites[f]
     used[key] = true
     rows.push(withFlags(base, true, !!live))
   }
   var others = []
   for (var d = 0; d < discovered.length; d++) {
-    var device = discovered[d]
-    var k = deviceKey(device)
-    if (used[k]) {
-      if (!refused[k]) continue
-      device = withoutFingerprint(device)
-      k = deviceKey(device)
-      if (used[k]) continue
-    }
+    var k = deviceKey(discovered[d])
+    if (used[k]) continue
     used[k] = true
-    others.push(withFlags(device, false, true))
+    others.push(withFlags(discovered[d], false, true))
   }
   var byAlias = function(a, b) { return a.alias.toLowerCase() < b.alias.toLowerCase() ? -1 : (a.alias.toLowerCase() > b.alias.toLowerCase() ? 1 : 0) }
   rows.sort(byAlias)
