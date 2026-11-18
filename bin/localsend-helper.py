@@ -320,7 +320,7 @@ class Discovery:
         self.lock = threading.Lock()
         self.checking = set()
         self.checks_per_ip = {}
-        self.udp_checks = 0
+        self.checks_by_kind = {}
         self.closed = False
         self.checkers = []
 
@@ -443,17 +443,14 @@ def accept_announced(discovery, device, via="udp"):
         # A UDP source address can be forged, a TCP one cannot, so the two
         # have separate budgets: forged announcements cannot crowd out a
         # device that registers with us over TCP, which is how LocalSend
-        # devices answer an announcement. Only UDP counts against the
-        # run-wide cap.
+        # devices answer an announcement. Each kind also has its own run-wide
+        # cap, so forged UDP traffic cannot use up the TCP share.
         budget = (via, device["ip"])
         used = discovery.checks_per_ip.get(budget, 0)
-        if used >= MAX_CHECKS_PER_IP:
-            return
-        if via != "tcp" and discovery.udp_checks >= MAX_CHECKS:
+        if used >= MAX_CHECKS_PER_IP or discovery.checks_by_kind.get(via, 0) >= MAX_CHECKS:
             return
         discovery.checks_per_ip[budget] = used + 1
-        if via != "tcp":
-            discovery.udp_checks += 1
+        discovery.checks_by_kind[via] = discovery.checks_by_kind.get(via, 0) + 1
         discovery.checking.add(claim)
         checker = threading.Thread(target=verify_device, args=(discovery, device), daemon=True)
         # Started under the lock, so cmd_discover never joins a thread that

@@ -204,12 +204,19 @@ class PinningTest(unittest.TestCase):
     def test_forged_udp_announcements_cannot_crowd_out_a_tcp_registration(self):
         forged = [dict(self.announced("%064x" % n), port=1) for n in range(40)]
         discovery, events = self.run_announce(*forged)
-        discovery.udp_checks = helper.MAX_CHECKS
+        discovery.checks_by_kind["udp"] = helper.MAX_CHECKS
         with redirect_stdout(io.StringIO()) as out:
             helper.accept_announced(discovery, self.announced(self.fingerprint), via="tcp")
             for checker in discovery.checkers:
                 checker.join(5)
         self.assertEqual(len(out.getvalue().splitlines()), 1)
+
+    def test_tcp_checks_have_a_run_wide_cap_too(self):
+        discovery = self.discovery()
+        discovery.checks_by_kind["tcp"] = helper.MAX_CHECKS
+        with redirect_stdout(io.StringIO()):
+            helper.accept_announced(discovery, self.announced(self.fingerprint), via="tcp")
+        self.assertEqual(discovery.checkers, [])
 
     def test_no_check_starts_after_the_run_closed(self):
         discovery = self.discovery()
