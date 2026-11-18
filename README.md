@@ -4,6 +4,17 @@ Bar widget for [LocalSend](https://localsend.org). It lists the devices on
 the network that accept files, sends them files or the clipboard from the
 bar, keeps favorites, and switches this machine's receiver on and off.
 
+## Install
+
+```
+omarchy plugin add https://github.com/mae240/omarchy-localsend.git --enable
+omarchy restart shell
+```
+
+Needs `python3` and the `localsend` app, which Omarchy ships. Sending works
+without the app running. Receiving needs the app, which the hero switch
+starts.
+
 ## Use
 
 | Where | Action |
@@ -56,3 +67,7 @@ them.
 ```
 node --test tests/
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
