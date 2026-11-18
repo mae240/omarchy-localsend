@@ -88,13 +88,14 @@ app saves to. Favorites live in the widget's entry in
 A LocalSend device over https names a fingerprint, and that fingerprint is
 the SHA-256 of its TLS certificate. The plugin checks it:
 
-- When the scan asks a device over https, its certificate must match the
-  fingerprint it claims, or the device is left out of the list. Devices that
-  announce themselves are checked the same way in the background.
+- An https device shows up only after its certificate matched the
+  fingerprint it claims. Devices that fail the check never appear.
 - Every send over https pins the certificate. If the device at that address
   presents a different one, nothing is sent and the panel says so.
 - A favorite saved over https only follows a device to a new address after
-  its certificate was checked, and never switches to http.
+  its certificate was checked, and never switches to http. A device that
+  claims a favorite's fingerprint without passing that check is not listed
+  at all, so there is never a second row with the favorite's name.
 
 Over http, which LocalSend offers as an option, nothing can be checked. Any
 device on the network can claim any name there.
